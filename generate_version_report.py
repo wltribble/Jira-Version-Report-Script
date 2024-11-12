@@ -141,3 +141,16 @@ def generate_version_report(version_name):
     ax1.set_xlabel("Date")
     ax1.grid(True)
     plt.show()
+
+if __name__ == "__main__":
+    unreleased_versions = list_unreleased_versions()
+    if not unreleased_versions:
+        print("No unreleased versions found.")
+    else:
+        try:
+            selection = int(input("Select a version by number: "))
+            selected_version = unreleased_versions[selection]
+            print(f"Generating report for version: {selected_version.name}")
+            generate_version_report(selected_version.name)
+        except (IndexError, ValueError):
+            print("Invalid selection.")
