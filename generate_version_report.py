@@ -1,6 +1,7 @@
 import os
 from jira import JIRA
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import pandas as pd
 from datetime import datetime, timedelta
 from google.colab import userdata # imports my environment variables (I built this in Google's browser-based Jupyter notebook tool)
@@ -38,6 +39,20 @@ def generate_version_report(version_name):
         print(f"No issues found for version '{version_name}'.")
         return
 
+    # Get the start date of the selected version
+    for v in jira.project_versions(PROJECT_KEY):
+        if str(v.name) == version_name:
+            version = v
+    version_start_date = str(pd.to_datetime(version.startDate) - timedelta(days=1))
+
+    # Find the earliest change date among issues in the version
+    earliest_date = min(
+        datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
+        for issue in issues
+        for history in issue.changelog.histories
+    )
+    latest_date = datetime.now().date()
+    
     # Find the earliest change date
     earliest_date = min(
         datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
@@ -54,27 +69,33 @@ def generate_version_report(version_name):
     total_story_count = sum(1 for issue in issues if issue.fields.issuetype.name == 'Story')
 
     # Dictionary to track last known values for each issue
-    last_known_values = {issue.key: {'story_points': None, 'completed': False} for issue in issues}
+    last_known_values = {issue.key: {'story_points': float(0.0), 'completed': False} for issue in issues}
 
     # Loop through each day and calculate cumulative metrics for that day
     current_date = earliest_date
     while current_date <= latest_date:
         for issue in issues:
             # Initialize variables for the current state of this issue
-            story_points = None
+            story_points = float(0.0)
             completed = False
 
+            # Sort the histories to ensure chronological processing
+            sorted_histories = sorted(
+                issue.changelog.histories,
+                key=lambda h: datetime.strptime(h.created, '%Y-%m-%dT%H:%M:%S.%f%z')
+            )
+            
             # Find the most recent status and story points as of the current date
-            for history in issue.changelog.histories:
+            for history in sorted_histories:
                 history_date = datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
                 if history_date > current_date:
                     break  # Stop if we exceed the current date
 
                 for item in history.items:
                     if item.field == 'status':
-                        completed = item.toString == "Done"
+                        completed = str(item.toString) == "Done"
                     elif item.field == 'Story point estimate':  # This is a custom field in my project, make sure to update for yours
-                        story_points = getattr(issue.fields, 'customfield_10016', None) # This is a custom field in my project, make sure to update for yours
+                        story_points = float(item.toString) if item.toString else float(0.0)
 
             # Retrieve last known values for comparison
             last_values = last_known_values[issue.key]
@@ -85,7 +106,7 @@ def generate_version_report(version_name):
             if issue.fields.issuetype.name == 'Story':
                 # Check for changes in story points and completed status
                 if story_points != last_story_points:
-                    if last_story_points is None:
+                    if last_story_points == float(0.0):
                         delta_story_points = story_points
                     else:
                         delta_story_points = story_points - last_story_points
@@ -114,30 +135,39 @@ def generate_version_report(version_name):
     # Convert data to DataFrame for cumulative plotting
     df = pd.DataFrame(data, columns=['Date', 'Story Points Completed', 'Estimated Story Points', 'Unestimated Stories (%)'])
 
+    # Convert 'Date' column to datetime and filter data from the version start date onward
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df[df['Date'] >= pd.to_datetime(version_start_date)]
+
     # Plotting with dual Y-axes
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
     # Plot on primary Y-axis (Story Points)
-    ax1.plot(df.index, df['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)
-    ax1.fill_between(df.index, df['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=2)
-    ax1.plot(df.index, df['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)
-    ax1.fill_between(df.index, df['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
+    ax1.plot(df['Date'], df['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)    
+    ax1.fill_between(df['Date'], df['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=2)    
+    ax1.plot(df['Date'], df['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)    
+    ax1.fill_between(df['Date'], df['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
     ax1.set_ylabel("Story Points")
     ax1.set_ylim(0, df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
 
     # Plot on secondary Y-axis (Percentage of Stories Unestimated)
     ax2 = ax1.twinx()
-    ax2.plot(df.index, df['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
+    ax2.plot(df['Date'], df['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
     ax2.set_ylabel("Percentage of Stories Unestimated")
     ax2.set_ylim(0, 100)  # Set scale from 0 to 100
 
+    # Format x-axis to show dates    
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))    
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 7 days; adjust as needed    
+    fig.autofmt_xdate()  # Rotate date labels for readability
+    
     # Combine legends from both axes
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, labels + labels2, loc='upper left')
 
     # Customize and display the plot
-    plt.title(f"Enhanced Version Report for {version_name}")
+    plt.title(f"Version Report for {version_name}")
     ax1.set_xlabel("Date")
     ax1.grid(True)
     plt.show()
