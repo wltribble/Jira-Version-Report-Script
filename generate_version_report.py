@@ -1,5 +1,7 @@
 import os
 from jira import JIRA
+import numpy as np
+import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
@@ -33,7 +35,6 @@ def get_version_issues(version_name):
     return issues
 
 def generate_version_report(version_name):
-    """Take chosen Version, iterate through its issues, iterate through their change histories, monitor changes in their estimates and statuses, and plot the graph"""
     issues = get_version_issues(version_name)
     if not issues:
         print(f"No issues found for version '{version_name}'.")
@@ -44,16 +45,9 @@ def generate_version_report(version_name):
         if str(v.name) == version_name:
             version = v
     version_start_date = str(pd.to_datetime(version.startDate) - timedelta(days=1))
+    version_release_date = str(pd.to_datetime(version.releaseDate))
 
     # Find the earliest change date among issues in the version
-    earliest_date = min(
-        datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
-        for issue in issues
-        for history in issue.changelog.histories
-    )
-    latest_date = datetime.now().date()
-    
-    # Find the earliest change date
     earliest_date = min(
         datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
         for issue in issues
@@ -84,7 +78,7 @@ def generate_version_report(version_name):
                 issue.changelog.histories,
                 key=lambda h: datetime.strptime(h.created, '%Y-%m-%dT%H:%M:%S.%f%z')
             )
-            
+
             # Find the most recent status and story points as of the current date
             for history in sorted_histories:
                 history_date = datetime.strptime(history.created, '%Y-%m-%dT%H:%M:%S.%f%z').date()
@@ -138,17 +132,90 @@ def generate_version_report(version_name):
     # Convert 'Date' column to datetime and filter data from the version start date onward
     df['Date'] = pd.to_datetime(df['Date'])
     df = df[df['Date'] >= pd.to_datetime(version_start_date)]
+    df['Days'] = (df['Date'] - df['Date'].min()).dt.days
+
+    # Set up the regression model
+    X = sm.add_constant(df['Days'])  # Add an intercept for the linear model
+    y = df['Story Points Completed']
+    model = sm.OLS(y, X).fit()  # Fit the linear regression model
+
+    # Get start and end points for projection
+    current_date = datetime.now().date()
+
+    # Generate future dates and extend DataFrame to include projection period
+    future_dates = pd.date_range(pd.to_datetime(current_date), pd.to_datetime(version_release_date), freq='D')
+    future_days = (future_dates - df['Date'].min()).days
+    projected_data = pd.DataFrame({'Date': future_dates, 'Days': future_days})
+
+    # Start the projection from the last value of cumulative_story_points_completed
+    start_value = df['Story Points Completed'].iloc[-1]
+    X_future = sm.add_constant(projected_data['Days'])
+    projected_points = model.predict(X_future)
+
+    # Adjust the predicted points to start from the current cumulative value
+    projected_data['Projected Story Points'] = projected_points + (start_value - projected_points.iloc[0])
+    
+    # Extend the current cumulative_estimated_story_points to the end date
+    projected_data['Estimated Story Points'] = df['Estimated Story Points'].iloc[-1]
+
+    # Calculate 95% confidence intervals for the projection (before applying the shift)
+    predictions = model.get_prediction(X_future)
+    conf_int = predictions.conf_int(alpha=0.05)
+
+    # Apply the shift to the confidence intervals to match the projected trendline
+    projected_data['Lower Bound'] = conf_int[:, 0] + (start_value - projected_points.iloc[0])
+    projected_data['Upper Bound'] = conf_int[:, 1] + (start_value - projected_points.iloc[0])
+
+    # Final guarantee that dates are in datetime
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    projected_data['Date'] = pd.to_datetime(projected_data['Date'], errors='coerce')
+
+    # Combine historical and projected data for plotting
+    combined_df = pd.concat([df, projected_data], ignore_index=True)
 
     # Plotting with dual Y-axes
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
-    # Plot on primary Y-axis (Story Points)
-    ax1.plot(df['Date'], df['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)    
-    ax1.fill_between(df['Date'], df['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=2)    
-    ax1.plot(df['Date'], df['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)    
+    # Plot the historical data
+    ax1.plot(df['Date'], df['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)
+    ax1.fill_between(df['Date'], df['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
+    ax1.plot(df['Date'], df['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)
     ax1.fill_between(df['Date'], df['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
+
+    # Plot the projected trend line and estimated points
+    ax1.plot(projected_data['Date'], projected_data['Projected Story Points'], color='navy', linewidth=3, linestyle='-', zorder=4)
+    ax1.fill_between(projected_data['Date'], projected_data['Lower Bound'], projected_data['Upper Bound'], color='navy', alpha=0.2)
+    ax1.plot(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', zorder=1)
+    ax1.fill_between(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
+
+    # Draw and label a vertical dotted line for the version release date
+    ax1.axvline(x=pd.to_datetime(version_release_date), color='gray', linestyle='--', linewidth=2)
+    label_padding = timedelta(days=0.25)
+    ax1.text(
+        pd.to_datetime(version_release_date) - label_padding,  # x-coordinate: the release date
+        ax1.get_ylim()[1] * 0.97,  # y-coordinate: slightly below the top of the y-axis
+        'Release Date',  # Label text
+        color='gray',  # Text color to match the line
+        ha='right',  # Horizontal alignment to the right of the x-coordinate
+        fontsize=10,  # Font size
+        fontweight='bold'  # Make the label bold
+    )
+
+    # Draw and label a vertical dotted line for today
+    ax1.axvline(x=datetime.now().date(), color='black', linestyle=":", linewidth=2)
+    ax1.text(
+        (datetime.now().date() + label_padding),
+        ax1.get_ylim()[1] * 0.97,  # y-coordinate: slightly below the top of the y-axis
+        ' Today',  # Label text
+        color='Black',  # Text color to match the line
+        ha='left',  # Horizontal alignment to the left of the x-coordinate
+        fontsize=10,  # Font size
+        fontweight='bold'  # Make the label bold
+    )
+
+    # Label Y-axis for Story Points
     ax1.set_ylabel("Story Points")
-    ax1.set_ylim(0, df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
+    ax1.set_ylim(0, combined_df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
 
     # Plot on secondary Y-axis (Percentage of Stories Unestimated)
     ax2 = ax1.twinx()
@@ -156,18 +223,24 @@ def generate_version_report(version_name):
     ax2.set_ylabel("Percentage of Stories Unestimated")
     ax2.set_ylim(0, 100)  # Set scale from 0 to 100
 
-    # Format x-axis to show dates    
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))    
-    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 7 days; adjust as needed    
+    # Format x-axis to show dates
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 7 days; adjust as needed
     fig.autofmt_xdate()  # Rotate date labels for readability
-    
+
+    # Draw trendline of work completed, if work has been done
+    start_date = df['Date'].min()  # Earliest date in the Date column
+    end_value = df['Story Points Completed'].iloc[-1]  # Last value of "Story Points Completed"
+    if end_value != 0:
+        ax1.plot([start_date, df['Date'].max()], [0, end_value], color='navy', linewidth=3, linestyle='-', zorder=4)
+
     # Combine legends from both axes
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, labels + labels2, loc='upper left')
 
     # Customize and display the plot
-    plt.title(f"Version Report for {version_name}")
+    plt.title(f"Version Report for Version: {version_name}")
     ax1.set_xlabel("Date")
     ax1.grid(True)
     plt.show()
