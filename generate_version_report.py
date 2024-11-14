@@ -212,15 +212,16 @@ def plot_version_report(historical_data, projected_data, version_release_date, v
 
     # Draw and label a vertical dotted line for today
     ax1.axvline(x=datetime.now().date(), color='black', linestyle=":", linewidth=2)
-    ax1.text(
-        (datetime.now().date() + label_padding),
-        ax1.get_ylim()[1] * 0.97,  # y-coordinate: slightly below the top of the y-axis
-        ' Today',  # Label text
-        color='Black',  # Text color to match the line
-        ha='left',  # Horizontal alignment to the left of the x-coordinate
-        fontsize=10,  # Font size
-        fontweight='bold'  # Make the label bold
-    )
+    if (datetime.now().date() < (pd.to_datetime(version_release_date).date() - timedelta(days=3))): # Only show label if far enough out
+        ax1.text(
+            (datetime.now().date() + label_padding),
+            ax1.get_ylim()[1] * 0.97,  # y-coordinate: slightly below the top of the y-axis
+            ' Today',  # Label text
+            color='Black',  # Text color to match the line
+            ha='left',  # Horizontal alignment to the left of the x-coordinate
+            fontsize=10,  # Font size
+            fontweight='bold'  # Make the label bold
+        )
 
     # Label Y-axis for Story Points
     ax1.set_ylabel("Story Points")
