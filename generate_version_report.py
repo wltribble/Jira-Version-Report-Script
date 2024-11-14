@@ -34,7 +34,8 @@ def get_version_issues(version_name):
     issues = jira.search_issues(jql, maxResults=False, expand='changelog')
     return issues
 
-def generate_version_report(version_name):
+def calculate_project_status_to_date(version_name):
+    """Iterate over each issue in a version and accumulate the changes to their statuses to show project status so far"""
     issues = get_version_issues(version_name)
     if not issues:
         print(f"No issues found for version '{version_name}'.")
@@ -127,16 +128,20 @@ def generate_version_report(version_name):
         current_date += timedelta(days=1)
 
     # Convert data to DataFrame for cumulative plotting
-    df = pd.DataFrame(data, columns=['Date', 'Story Points Completed', 'Estimated Story Points', 'Unestimated Stories (%)'])
+    historical_data = pd.DataFrame(data, columns=['Date', 'Story Points Completed', 'Estimated Story Points', 'Unestimated Stories (%)'])
 
     # Convert 'Date' column to datetime and filter data from the version start date onward
-    df['Date'] = pd.to_datetime(df['Date'])
-    df = df[df['Date'] >= pd.to_datetime(version_start_date)]
-    df['Days'] = (df['Date'] - df['Date'].min()).dt.days
+    historical_data['Date'] = pd.to_datetime(historical_data['Date'])
+    historical_data = historical_data[historical_data['Date'] >= pd.to_datetime(version_start_date)]
+    historical_data['Days'] = (historical_data['Date'] - historical_data['Date'].min()).dt.days
 
+    return historical_data, version_release_date
+
+def projection_of_progress(historical_data, version_release_date): 
+    """Take project status so far and use it to forecast progress till completion"""
     # Set up the regression model
-    X = sm.add_constant(df['Days'])  # Add an intercept for the linear model
-    y = df['Story Points Completed']
+    X = sm.add_constant(historical_data['Days'])  # Add an intercept for the linear model
+    y = historical_data['Story Points Completed']
     model = sm.OLS(y, X).fit()  # Fit the linear regression model
 
     # Get start and end points for projection
@@ -144,11 +149,11 @@ def generate_version_report(version_name):
 
     # Generate future dates and extend DataFrame to include projection period
     future_dates = pd.date_range(pd.to_datetime(current_date), pd.to_datetime(version_release_date), freq='D')
-    future_days = (future_dates - df['Date'].min()).days
+    future_days = (future_dates - historical_data['Date'].min()).days
     projected_data = pd.DataFrame({'Date': future_dates, 'Days': future_days})
 
     # Start the projection from the last value of cumulative_story_points_completed
-    start_value = df['Story Points Completed'].iloc[-1]
+    start_value = historical_data['Story Points Completed'].iloc[-1]
     X_future = sm.add_constant(projected_data['Days'])
     projected_points = model.predict(X_future)
 
@@ -156,7 +161,7 @@ def generate_version_report(version_name):
     projected_data['Projected Story Points'] = projected_points + (start_value - projected_points.iloc[0])
     
     # Extend the current cumulative_estimated_story_points to the end date
-    projected_data['Estimated Story Points'] = df['Estimated Story Points'].iloc[-1]
+    projected_data['Estimated Story Points'] = historical_data['Estimated Story Points'].iloc[-1]
 
     # Calculate 95% confidence intervals for the projection (before applying the shift)
     predictions = model.get_prediction(X_future)
@@ -167,20 +172,24 @@ def generate_version_report(version_name):
     projected_data['Upper Bound'] = conf_int[:, 1] + (start_value - projected_points.iloc[0])
 
     # Final guarantee that dates are in datetime
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    historical_data['Date'] = pd.to_datetime(historical_data['Date'], errors='coerce')
     projected_data['Date'] = pd.to_datetime(projected_data['Date'], errors='coerce')
 
+    return historical_data, projected_data
+
+def plot_version_report(historical_data, projected_data, version_release_date, version_name):
+    """Take historical project status + projected future progress and plot them"""
     # Combine historical and projected data for plotting
-    combined_df = pd.concat([df, projected_data], ignore_index=True)
+    combined_df = pd.concat([historical_data, projected_data], ignore_index=True)
 
     # Plotting with dual Y-axes
     fig, ax1 = plt.subplots(figsize=(12, 8))
 
     # Plot the historical data
-    ax1.plot(df['Date'], df['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)
-    ax1.fill_between(df['Date'], df['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
-    ax1.plot(df['Date'], df['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)
-    ax1.fill_between(df['Date'], df['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
+    ax1.plot(historical_data['Date'], historical_data['Estimated Story Points'], color='darkgray', label='Cumulative Estimated Story Points', zorder=1)
+    ax1.fill_between(historical_data['Date'], historical_data['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
+    ax1.plot(historical_data['Date'], historical_data['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)
+    ax1.fill_between(historical_data['Date'], historical_data['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
 
     # Plot the projected trend line and estimated points
     ax1.plot(projected_data['Date'], projected_data['Projected Story Points'], color='navy', linewidth=3, linestyle='-', zorder=4)
@@ -219,7 +228,7 @@ def generate_version_report(version_name):
 
     # Plot on secondary Y-axis (Percentage of Stories Unestimated)
     ax2 = ax1.twinx()
-    ax2.plot(df['Date'], df['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
+    ax2.plot(historical_data['Date'], historical_data['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
     ax2.set_ylabel("Percentage of Stories Unestimated")
     ax2.set_ylim(0, 100)  # Set scale from 0 to 100
 
@@ -229,10 +238,10 @@ def generate_version_report(version_name):
     fig.autofmt_xdate()  # Rotate date labels for readability
 
     # Draw trendline of work completed, if work has been done
-    start_date = df['Date'].min()  # Earliest date in the Date column
-    end_value = df['Story Points Completed'].iloc[-1]  # Last value of "Story Points Completed"
+    start_date = historical_data['Date'].min()  # Earliest date in the Date column
+    end_value = historical_data['Story Points Completed'].iloc[-1]  # Last value of "Story Points Completed"
     if end_value != 0:
-        ax1.plot([start_date, df['Date'].max()], [0, end_value], color='navy', linewidth=3, linestyle='-', zorder=4)
+        ax1.plot([start_date, historical_data['Date'].max()], [0, end_value], color='navy', linewidth=3, linestyle='-', zorder=4)
 
     # Combine legends from both axes
     lines, labels = ax1.get_legend_handles_labels()
@@ -254,6 +263,8 @@ if __name__ == "__main__":
             selection = int(input("Select a version by number: "))
             selected_version = unreleased_versions[selection]
             print(f"Generating report for version: {selected_version.name}")
-            generate_version_report(selected_version.name)
+            historical_data, version_release_date = calculate_project_status_to_date(selected_version.name)
+            historical_data, projected_data = projection_of_progress(historical_data, version_release_date)
+            plot_version_report(historical_data, projected_data, version_release_date, selected_version.name)
         except (IndexError, ValueError):
             print("Invalid selection.")
