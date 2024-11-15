@@ -197,6 +197,10 @@ def plot_version_report(historical_data, projected_data, version_release_date, v
     ax1.plot(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', zorder=1)
     ax1.fill_between(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
 
+    # Label Y-axis for Story Points
+    ax1.set_ylabel("Story Points")
+    ax1.set_ylim(0, combined_df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
+
     # Draw and label a vertical dotted line for the version release date
     ax1.axvline(x=pd.to_datetime(version_release_date), color='gray', linestyle='--', linewidth=2)
     label_padding = timedelta(days=0.25)
@@ -222,10 +226,6 @@ def plot_version_report(historical_data, projected_data, version_release_date, v
             fontsize=10,  # Font size
             fontweight='bold'  # Make the label bold
         )
-
-    # Label Y-axis for Story Points
-    ax1.set_ylabel("Story Points")
-    ax1.set_ylim(0, combined_df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
 
     # Plot on secondary Y-axis (Percentage of Stories Unestimated)
     ax2 = ax1.twinx()
