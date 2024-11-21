@@ -36,6 +36,8 @@ def get_version_issues(version_name):
 
 def calculate_project_status_to_date(version_name):
     """Iterate over each issue in a version and accumulate the changes to their statuses to show project status so far"""
+
+    print("Getting status to date...")
     issues = get_version_issues(version_name)
     if not issues:
         print(f"No issues found for version '{version_name}'.")
@@ -116,7 +118,7 @@ def calculate_project_status_to_date(version_name):
                     last_values['completed'] = completed  # Update last known completed status
 
                 # Track unestimated stories if story_points is None
-                cumulative_unestimated_stories = sum(1 for key, values in last_known_values.items() if values['story_points'] is None)
+                cumulative_unestimated_stories = sum(1 for key, values in last_known_values.items() if values['story_points'] == float(0.0))
 
         # Calculate the percentage of unestimated stories for this day
         unestimated_percentage = (cumulative_unestimated_stories / total_story_count) * 100 if total_story_count > 0 else 0
@@ -137,12 +139,10 @@ def calculate_project_status_to_date(version_name):
 
     return historical_data, version_release_date
 
-def projection_of_progress(historical_data, version_release_date): 
+def projection_of_progress(historical_data, version_release_date):
     """Take project status so far and use it to forecast progress till completion"""
-    # Set up the regression model
-    X = sm.add_constant(historical_data['Days'])  # Add an intercept for the linear model
-    y = historical_data['Story Points Completed']
-    model = sm.OLS(y, X).fit()  # Fit the linear regression model
+
+    print("Generating projection of status...")
 
     # Get start and end points for projection
     current_date = datetime.now().date()
@@ -152,24 +152,33 @@ def projection_of_progress(historical_data, version_release_date):
     future_days = (future_dates - historical_data['Date'].min()).days
     projected_data = pd.DataFrame({'Date': future_dates, 'Days': future_days})
 
-    # Start the projection from the last value of cumulative_story_points_completed
-    start_value = historical_data['Story Points Completed'].iloc[-1]
-    X_future = sm.add_constant(projected_data['Days'])
-    projected_points = model.predict(X_future)
-
-    # Adjust the predicted points to start from the current cumulative value
-    projected_data['Projected Story Points'] = projected_points + (start_value - projected_points.iloc[0])
-    
-    # Extend the current cumulative_estimated_story_points to the end date
+    # Extend the current cumulative_estimated_story_points and cumulative_unestimated_percentage to the end date
     projected_data['Estimated Story Points'] = historical_data['Estimated Story Points'].iloc[-1]
+    projected_data['Unestimated Stories (%)'] = historical_data['Unestimated Stories (%)'].iloc[-1]
 
-    # Calculate 95% confidence intervals for the projection (before applying the shift)
-    predictions = model.get_prediction(X_future)
-    conf_int = predictions.conf_int(alpha=0.05)
+    if str(historical_data['Story Points Completed'].max()) != "nan":
+        # Set up the regression model
+        X = sm.add_constant(historical_data['Days'])  # Add an intercept for the linear model
+        y = historical_data['Story Points Completed']
+        model = sm.OLS(y, X).fit()  # Fit the linear regression model
 
-    # Apply the shift to the confidence intervals to match the projected trendline
-    projected_data['Lower Bound'] = conf_int[:, 0] + (start_value - projected_points.iloc[0])
-    projected_data['Upper Bound'] = conf_int[:, 1] + (start_value - projected_points.iloc[0])
+
+
+        # Start the projection from the last value of cumulative_story_points_completed
+        start_value = historical_data['Story Points Completed'].iloc[-1]
+        X_future = sm.add_constant(projected_data['Days'])
+        projected_points = model.predict(X_future)
+
+        # Adjust the predicted points to start from the current cumulative value
+        projected_data['Projected Story Points'] = projected_points + (start_value - projected_points.iloc[0])
+
+        # Calculate 95% confidence intervals for the projection (before applying the shift)
+        predictions = model.get_prediction(X_future)
+        conf_int = predictions.conf_int(alpha=0.05)
+
+        # Apply the shift to the confidence intervals to match the projected trendline
+        projected_data['Lower Bound'] = conf_int[:, 0] + (start_value - projected_points.iloc[0])
+        projected_data['Upper Bound'] = conf_int[:, 1] + (start_value - projected_points.iloc[0])
 
     # Final guarantee that dates are in datetime
     historical_data['Date'] = pd.to_datetime(historical_data['Date'], errors='coerce')
@@ -179,8 +188,8 @@ def projection_of_progress(historical_data, version_release_date):
 
 def plot_version_report(historical_data, projected_data, version_release_date, version_name):
     """Take historical project status + projected future progress and plot them"""
-    # Combine historical and projected data for plotting
-    combined_df = pd.concat([historical_data, projected_data], ignore_index=True)
+
+    print("Plotting version report now...")
 
     # Plotting with dual Y-axes
     fig, ax1 = plt.subplots(figsize=(12, 8))
@@ -191,15 +200,9 @@ def plot_version_report(historical_data, projected_data, version_release_date, v
     ax1.plot(historical_data['Date'], historical_data['Story Points Completed'], color='blue', label='Cumulative Story Points Completed', zorder=3)
     ax1.fill_between(historical_data['Date'], historical_data['Story Points Completed'], color='blue', alpha=0.2, zorder=2.5)
 
-    # Plot the projected trend line and estimated points
-    ax1.plot(projected_data['Date'], projected_data['Projected Story Points'], color='navy', linewidth=3, linestyle='-', zorder=4)
-    ax1.fill_between(projected_data['Date'], projected_data['Lower Bound'], projected_data['Upper Bound'], color='navy', alpha=0.2)
-    ax1.plot(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', zorder=1)
-    ax1.fill_between(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
-
     # Label Y-axis for Story Points
     ax1.set_ylabel("Story Points")
-    ax1.set_ylim(0, combined_df['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max
+    ax1.set_ylim(0, historical_data['Estimated Story Points'].max() * 1.1)  # Add 10% padding to max)
 
     # Draw and label a vertical dotted line for the version release date
     ax1.axvline(x=pd.to_datetime(version_release_date), color='gray', linestyle='--', linewidth=2)
@@ -227,16 +230,25 @@ def plot_version_report(historical_data, projected_data, version_release_date, v
             fontweight='bold'  # Make the label bold
         )
 
-    # Plot on secondary Y-axis (Percentage of Stories Unestimated)
-    ax2 = ax1.twinx()
-    ax2.plot(historical_data['Date'], historical_data['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
-    ax2.set_ylabel("Percentage of Stories Unestimated")
-    ax2.set_ylim(0, 100)  # Set scale from 0 to 100
-
     # Format x-axis to show dates
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
     ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 7 days; adjust as needed
     fig.autofmt_xdate()  # Rotate date labels for readability
+
+    # Combine historical and projected data for plotting
+    combined_df = pd.concat([historical_data, projected_data], ignore_index=True)
+
+    # Plot the projected trend line and estimated points
+    ax1.plot(projected_data['Date'], projected_data['Projected Story Points'], color='navy', linewidth=3, linestyle='-', zorder=4)
+    ax1.fill_between(projected_data['Date'], projected_data['Lower Bound'], projected_data['Upper Bound'], color='navy', alpha=0.2)
+    ax1.plot(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', zorder=1)
+    ax1.fill_between(projected_data['Date'], projected_data['Estimated Story Points'], color='darkgray', alpha=0.2, zorder=1.5)
+
+    # Plot Percentage of Stories Unestimated on secondary Y-axis
+    ax2 = ax1.twinx()
+    ax2.plot(combined_df['Date'], combined_df['Unestimated Stories (%)'], color='red', label='Percentage of Stories Unestimated', linestyle='--', zorder=2)
+    ax2.set_ylabel("Percentage of Stories Unestimated")
+    ax2.set_ylim(0, 100)  # Set scale from 0 to 100
 
     # Draw trendline of work completed, if work has been done
     start_date = historical_data['Date'].min()  # Earliest date in the Date column
