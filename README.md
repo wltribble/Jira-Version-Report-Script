@@ -14,3 +14,5 @@ This is critical to project management becasue there are only three things you h
 - the rate of work (how many engineers do I have?)
 
 Read more about Jira's version reports here: https://support.atlassian.com/jira-software-cloud/docs/view-and-understand-the-version-report/
+
+Yes, I used ChatGPT to help me build this - to speed up development, as well as practice using ChatGPT professionally.
